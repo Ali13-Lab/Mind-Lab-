@@ -1,0 +1,143 @@
+name: Android Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          missing=0
+          for v in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then echo "::error::Missing GitHub secret: $v"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Compute version
+        id: ver
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          CODE=$((GITHUB_RUN_NUMBER + ${VERSION_CODE_OFFSET:-0}))
+          NAME="$BASE.$GITHUB_RUN_NUMBER"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NAME" >> "$GITHUB_OUTPUT"
+          echo "Version $NAME (code $CODE)"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Prepare web files
+        run: |
+          rm -rf www && mkdir -p www
+          cp index.html www/index.html
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Generate icons and splash
+        run: |
+          mkdir -p assets
+          cp icon-only.png icon-foreground.png icon-background.png splash.png splash-dark.png assets/
+          npx --yes @capacitor/assets@latest generate --android \
+            --assetPath assets \
+            --iconBackgroundColor '#ffffff' --iconBackgroundColorDark '#ffffff' \
+            --splashBackgroundColor '#ffffff' --splashBackgroundColorDark '#0f1320'
+
+      - name: Sync web files
+        run: npx cap sync android
+
+      - name: Set version
+        run: |
+          F=android/app/build.gradle
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ steps.ver.outputs.code }}/" $F
+          sed -i -E "s/versionName \"[^\"]*\"/versionName \"${{ steps.ver.outputs.name }}\"/" $F
+          grep -E "versionCode|versionName" $F
+          grep -q "versionCode ${{ steps.ver.outputs.code }}" $F
+
+      - name: Build release APK (unsigned)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Align and sign APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          UNSIGNED=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Unsigned APK: $UNSIGNED"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "Build tools: $BT"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          OUT="MindLab-v${{ steps.ver.outputs.name }}.apk"
+          "$BT/zipalign" -p -f 4 "$UNSIGNED" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/release.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD \
+            --out "$OUT" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify --print-certs "$OUT"
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "APK_FILE=$OUT" >> "$GITHUB_ENV"
+
+      - name: Remove keystore from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MindLab-apk
+          path: |
+            ${{ env.APK_FILE }}
+            ${{ env.APK_FILE }}.sha256
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --cleanup-tag --yes
+          fi
+          gh release create "$TAG" "$APK_FILE" "$APK_FILE.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "Mind Lab ${{ steps.ver.outputs.name }}" \
+            --notes "Automated release build from commit ${GITHUB_SHA::7}. Download the .apk file below and install it on your Android phone."
