@@ -1,0 +1,9 @@
+{
+  "appId": "com.mindlab.app",
+  "appName": "Mind Lab",
+  "webDir": "www",
+  "backgroundColor": "#ffffff",
+  "android": {
+    "allowMixedContent": false
+  }
+}
