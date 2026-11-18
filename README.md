@@ -105,7 +105,7 @@ Availability| APK Release
 
 👨‍💻 About the Developer
 
-Developed by Shin
+Developed by Ali
 
 MindLab is an independent project developed by Shin (Instagram: @shin.ali96).
 
@@ -163,6 +163,6 @@ Its psychological content and learning exercises are intended for educational pu
 
 Understand the Human Mind.
 
-Developed by Shin
+Developed by Ali
 
 </p>
