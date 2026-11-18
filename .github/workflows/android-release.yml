@@ -108,15 +108,11 @@ jobs:
           grep -F "versionName \"$version\"" "$gradle_file"
           echo "name=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Build APK
+      - name: Build unsigned release APK
         working-directory: android
         run: |
-          tasks=(:app:assembleRelease)
-          if [[ "$PUBLISH" != true ]]; then
-            tasks=(:app:assembleDebug "${tasks[@]}")
-          fi
           log="$RUNNER_TEMP/mindlab-gradle.log"
-          if ! bash gradlew "${tasks[@]}" --no-daemon --console=plain 2>&1 | tee "$log"; then
+          if ! bash gradlew :app:assembleRelease --no-daemon --console=plain 2>&1 | tee "$log"; then
             detail=$(awk '/^\* What went wrong:/{show=1; next} /^\* Try:/{show=0} show && ++lines <= 30 {print substr($0,1,320)}' "$log")
             if [[ -z "$detail" ]]; then detail=$(tail -n 20 "$log"); fi
             detail=${detail//%/%25}
@@ -126,6 +122,11 @@ jobs:
             exit 1
           fi
           test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Build test APK
+        if: env.PUBLISH != 'true'
+        working-directory: android
+        run: bash gradlew :app:assembleDebug --no-daemon --console=plain
 
       - name: Upload test APK
         if: env.PUBLISH != 'true'
