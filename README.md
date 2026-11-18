@@ -4,7 +4,7 @@ Mind Lab is an offline psychology learning app packaged for Android with Capacit
 
 ## Get a test APK
 
-Push an app change to a non-`main` branch. In **Actions → Android APK**, open that branch's successful run and download **MindLab-test-apk** under **Artifacts**. Extract the ZIP and install `app-debug.apk` on Android. This debug build is for testing, not distribution. If it conflicts with an installed build signed with a different key, Android will require uninstalling that build first (which can delete its local app data).
+Push an app change to a non-`main` branch. The workflow builds the unsigned release variant to catch release-only errors before merge, then uploads the installable debug APK. In **Actions → Android APK**, open that branch's successful run and download **MindLab-test-apk** under **Artifacts**. Extract the ZIP and install `app-debug.apk` on Android. This debug build is for testing, not distribution. If it conflicts with an installed build signed with a different key, Android will require uninstalling that build first (which can delete its local app data).
 
 ## Publish a signed APK
 
