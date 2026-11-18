@@ -1,0 +1,11 @@
+/node_modules/
+/android/
+/www/
+*.apk
+*.apk.sha256
+*.aab
+*.jks
+*.jks.b64
+*.keystore
+*.keystore.b64
+*.p12
