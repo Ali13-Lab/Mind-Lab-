@@ -8,14 +8,43 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish a signed GitHub Release (main only)
+        description: Publish a signed GitHub Release (other branches only check signing setup)
         type: boolean
         default: false
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  signing-setup:
+    name: Check Android signing setup
+    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check for required secrets without exposing their values
+        env:
+          HAS_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 != '' }}
+          HAS_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD != '' }}
+          HAS_KEY_ALIAS: ${{ secrets.KEY_ALIAS != '' }}
+          HAS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD != '' }}
+        run: |
+          missing=0
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            flag="HAS_$name"
+            if [[ "${!flag}" != true ]]; then
+              echo "::error::Missing Android signing secret: $name"
+              missing=1
+            fi
+          done
+          if (( missing )); then exit 1; fi
+          echo '::notice::All required signing secrets are configured. The release job verifies the APK signature.'
+
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -23,7 +52,6 @@ jobs:
       PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) }}
     outputs:
       version: ${{ steps.version.outputs.name }}
-      artifact: ${{ steps.apk.outputs.artifact }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -81,30 +109,44 @@ jobs:
           echo "name=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build APK
-        id: apk
         working-directory: android
         run: |
-          if [[ "$PUBLISH" == true ]]; then
-            bash gradlew :app:assembleRelease --no-daemon --stacktrace
-            echo 'file=android/app/build/outputs/apk/release/app-release-unsigned.apk' >> "$GITHUB_OUTPUT"
-            echo 'artifact=MindLab-unsigned-apk' >> "$GITHUB_OUTPUT"
-          else
-            bash gradlew :app:assembleDebug --no-daemon --stacktrace
-            echo 'file=android/app/build/outputs/apk/debug/app-debug.apk' >> "$GITHUB_OUTPUT"
-            echo 'artifact=MindLab-test-apk' >> "$GITHUB_OUTPUT"
+          tasks=(:app:assembleRelease)
+          if [[ "$PUBLISH" != true ]]; then
+            tasks=(:app:assembleDebug "${tasks[@]}")
           fi
+          log="$RUNNER_TEMP/mindlab-gradle.log"
+          if ! bash gradlew "${tasks[@]}" --no-daemon --console=plain 2>&1 | tee "$log"; then
+            detail=$(awk '/^\* What went wrong:/{show=1; next} /^\* Try:/{show=0} show && ++lines <= 30 {print substr($0,1,320)}' "$log")
+            if [[ -z "$detail" ]]; then detail=$(tail -n 20 "$log"); fi
+            detail=${detail//%/%25}
+            detail=${detail//$'\n'/%0A}
+            detail=${detail//$'\r'/%0D}
+            printf '::error title=Gradle APK build failed::%s\n' "$detail"
+            exit 1
+          fi
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
 
-      - name: Upload APK artifact
+      - name: Upload test APK
+        if: env.PUBLISH != 'true'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.apk.outputs.artifact }}
-          path: ${{ steps.apk.outputs.file }}
+          name: MindLab-test-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload unsigned release APK
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: MindLab-unsigned-apk
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
 
   publish:
     name: Sign and publish APK
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish)
-    needs: build
+    needs: [build, signing-setup]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -116,7 +158,7 @@ jobs:
       - name: Download unsigned APK
         uses: actions/download-artifact@v7
         with:
-          name: ${{ needs.build.outputs.artifact }}
+          name: MindLab-unsigned-apk
 
       - name: Align, sign and verify APK
         env:
